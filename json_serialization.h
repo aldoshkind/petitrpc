@@ -5,32 +5,30 @@
 #include <string>
 #include <functional>
 
-#include <cereal/archives/json.hpp>
+#include <nlohmann/json.hpp>
 
 namespace rpc::json_serialization
 {
 
 typedef std::map<std::string, std::string> type_map_t;
 
-typedef std::function<void(const std::any &, cereal::JSONOutputArchive &)> serializer_t;
-typedef std::function<void(cereal::JSONInputArchive &, std::any &)> deserializer_t;
+typedef std::function<void(const std::any &, nlohmann::json &)> serializer_t;
+typedef std::function<void(nlohmann::json &, std::any &)> deserializer_t;
 
 typedef std::map<std::string, serializer_t> serializers_t;
 typedef std::map<std::string, deserializer_t> deserializers_t;
 
 template <class T>
-void serialize(const std::any &a, cereal::JSONOutputArchive &b)
+void serialize(const std::any &a, nlohmann::json &b)
 {
 	const auto &v = std::any_cast<T>(a);
-	b(v);
+	b = v;
 }
 
 template <class T>
-void deserialize(cereal::JSONInputArchive &b, std::any &a)
+void deserialize(nlohmann::json &b, std::any &a)
 {
-	T v;
-	b(v);
-	a = v;
+	a = b;
 }
 
 template <class T>
@@ -69,7 +67,7 @@ std::string get_type(const std::string &id, const type_map_t &types)
 	return types.at(id);
 }
 
-bool serialize(const std::any &a, const serializers_t &sers, cereal::JSONOutputArchive &arch)
+bool serialize(const std::any &a, const serializers_t &sers, nlohmann::json &arch)
 {
 	auto ser = sers.find(a.type().name());
 	if(ser == sers.end())
@@ -80,7 +78,7 @@ bool serialize(const std::any &a, const serializers_t &sers, cereal::JSONOutputA
 	return true;
 }
 
-bool deserialize(cereal::JSONInputArchive &arch, const deserializers_t &desers, std::any &a, std::string type)
+bool deserialize(nlohmann::json &arch, const deserializers_t &desers, std::any &a, std::string type)
 {
 	auto deser = desers.find(type);
 	if(deser == desers.end())

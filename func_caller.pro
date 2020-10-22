@@ -6,7 +6,7 @@ CONFIG -= qt
 SOURCES += \
         main.cpp
 
-INCLUDEPATH += /home/dmitry/downloads/vcs/cereal/include/
+INCLUDEPATH += modules/json/include/
 
 HEADERS += \
 	func_caller.h \
