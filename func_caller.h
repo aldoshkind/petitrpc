@@ -53,6 +53,7 @@ public:
 	func_caller(const std::function<R(Ts...)> &f) : func(f)
 	{
 		init_args();
+		return_type = typeid (R).name();
 	}
 
 	void init_args()

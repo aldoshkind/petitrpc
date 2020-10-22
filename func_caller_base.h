@@ -16,8 +16,9 @@ class func_caller_base
 public:
 	virtual ~func_caller_base() = default;
 
-	param_descr_list_t params;
 	std::string name;
+	std::string return_type;
+	param_descr_list_t params;
 
 	void set_param_name(size_t i, const std::string &name)
 	{

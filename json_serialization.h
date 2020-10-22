@@ -28,7 +28,8 @@ void serialize(const std::any &a, nlohmann::json &b)
 template <class T>
 void deserialize(nlohmann::json &b, std::any &a)
 {
-	a = b;
+	T v = b;
+	a = v;
 }
 
 template <class T>
@@ -113,6 +114,10 @@ void init_types(serializers_t &serializers, deserializers_t &deserializers, type
 	add_type<float>("float", type_map_in, type_map_out);
 	add_type<double>("double", type_map_in, type_map_out);
 	add_type<std::string>("string", type_map_in, type_map_out);
+	add_type<void>("void", type_map_in, type_map_out);
+	
+	serializers[typeid(void).name()] = [](const std::any &, nlohmann::json &j){j.clear();};
+	deserializers[typeid(void).name()] = [](nlohmann::json &, std::any &a){a.reset();};
 }
 
 }

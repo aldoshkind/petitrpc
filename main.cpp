@@ -4,12 +4,17 @@
 #include <functional>
 #include <any>
 #include <map>
+#include <mutex>
+#include <queue>
+#include <thread>
+#include <condition_variable>
 
 #include <cxxabi.h>
 
 #include "interface.h"
 #include "json_serialization.h"
 #include "func_caller_serializer.h"
+#include "json_interface_wrapper.h"
 
 using namespace std;
 using namespace rpc;
@@ -36,7 +41,7 @@ public:
 		name = "testo";
 		register_method("test", (std::function<void(const std::string &)>)std::bind(&testo::test, this, std::placeholders::_1), {"str"});
 		register_method("testb", (std::function<void(const std::string &, int)>)std::bind(&testo::testb, this, std::placeholders::_1, std::placeholders::_2), {"str", "a"});
-		register_method("testc", (std::function<void(const std::string &, float, float)>)std::bind(&testo::testc, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3), {"str", "a", "b"});
+		register_method("testc", (std::function<int(const std::string &, float, float)>)std::bind(&testo::testc, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3), {"str", "a", "b"});
 	}
 
 	void test(const std::string &s)
@@ -49,125 +54,182 @@ public:
 		printf("%s: %s %d\n", __PRETTY_FUNCTION__, s.c_str(), x);
 	}
 
-	void testc(const std::string &s, float a, float b)
+	int testc(const std::string &s, float a, float b)
 	{
-		printf("%s: %s %f %f\n", __PRETTY_FUNCTION__, s.c_str(), a, b);
+		return printf("%s: %s %f %f\n", __PRETTY_FUNCTION__, s.c_str(), a, b);
 	}
 };
 
-/*void get_interface(interface *inf, cereal::JSONOutputArchive &a, const type_map_t &types)
+class command
 {
-	if(inf == nullptr)
-	{
-		return;
-	}
-	a(cereal::make_nvp("name", inf->name));
-	a.setNextName("methods");
-	a.startNode();
-	a.makeArray();
+public:
+	command() = default;
+	virtual ~command() = default;
 
-	for(auto &func : inf->func_map)
-	{
-		a.startNode();
-		const func_caller_base *fc = func.second.get();
-		serialize(fc, a, types);
-		a.finishNode();
-	}
+	virtual std::string get_cmd() const = 0;
+	virtual void reply(const std::string &cmd) = 0;
+	virtual void error(const std::string &err) = 0;
+};
 
-	a.finishNode();
-}*/
-
-bool deserialize_arguments(arg_set_t &args, nlohmann::json &a, const param_descr_list_t &params, const deserializers_t &desers)
+class command_executor
 {
-	std::string str;
+public:
+	typedef std::shared_ptr<command> command_ptr;
 
-	if(a.contains("arguments") == false)
+	command_executor()
 	{
-		return false;
+		start();
+	}
+	virtual ~command_executor() = default;
+
+	bool add_command(command_ptr cmd)
+	{
+		std::unique_lock<decltype (commands_mutex)> lock(commands_mutex);
+		commands.push(cmd);
+		commands_condvar.notify_all();
+		return true;
 	}
 
-	nlohmann::json &arguments = a["arguments"];
+private:
+	typedef std::queue<command_ptr> commands_t;
+	commands_t commands;
+	std::mutex commands_mutex;
+	std::condition_variable commands_condvar;
+	std::thread cmd_execution_thread;
+	bool running = false;
 
-	if(arguments.size() != params.size())
+	void start()
 	{
-		return false;
+		stop();
+		running = true;
+		cmd_execution_thread = std::thread(&command_executor::cmd_execution_loop, this);
 	}
 
-	for(size_t i = 0 ; i < arguments.size() ; i += 1)
+	void stop()
 	{
-		std::any a;
-		deserialize(arguments.at(i), desers, a, std::next(params.begin(), i)->first);
-		args.push_back(a);
+		running = false;
+		if(cmd_execution_thread.joinable())
+		{
+			cmd_execution_thread.join();
+		}
 	}
 
-	return true;
-}
+	void cmd_execution_loop()
+	{
+		for( ; running ; )
+		{
+			command_ptr cmd;
+			{
+				std::unique_lock<decltype (commands_mutex)> lock(commands_mutex);
+				commands_condvar.wait(lock, [this](){return commands.size() > 0;});
+				cmd = commands.front();
+				commands.pop();
+			}
+			try
+			{
+				cmd->reply(run_command(cmd->get_cmd()));
+			}
+			catch(const char *e)
+			{
+				cmd->error(std::string("Error running command: ") + e);
+			}
+			catch(const exception &e)
+			{
+				cmd->error(std::string("Error running command: ") + e.what());
+			}
+			catch(...)
+			{
+				cmd->error("Error running command");
+			}
+		}
+	}
 
-bool process_call(interface *inf, nlohmann::json &in, nlohmann::json &out, const serializers_t &ser, const deserializers_t &desers)
+	virtual std::string run_command(const std::string &cmd)
+	{
+		printf("%s: command: %s\n", __PRETTY_FUNCTION__, cmd.c_str());
+		return "ok";
+	}
+};
+
+class interface_executor : public command_executor
 {
-	if(inf == nullptr)
+public:
+	interface_executor()
 	{
-		out["error"] = std::string("No such object");
-		return false;
+		//
 	}
 
-	std::string name = in["method"];
+	~interface_executor() = default;
 
-	std::string error;
-
-	auto it = inf->func_map.find(name);
-	if(it == inf->func_map.end())
+	void set_interface(interface *i)
 	{
-		out["error"] = std::string("No such method");
-		return false;
+		iface = i;
 	}
 
-	arg_set_t args;
-	bool deser_ok = deserialize_arguments(args, in, it->second->params, desers);
-	if(deser_ok == false)
+private:
+	std::string run_command(const std::string &cmd)
 	{
-		out["error"] = std::string("Cannot deserialize arguments");
-		return false;
+		nlohmann::json json;
+		nlohmann::json request;
+		try
+		{
+			json = nlohmann::json::parse(cmd);
+			request = json.at("request");
+		}
+		catch(const char *e)
+		{
+			return "Error parsing request";
+		}
+		catch(const exception &e)
+		{
+			return "Error parsing request";
+		}
+		catch(...)
+		{
+			return "Error parsing request";
+		}
+
+		if(iface == nullptr)
+		{
+			return "Interface not set";
+		}
+		nlohmann::json out;
+		wrapper.process_call(iface, json, out);
+		return out.dump();
 	}
 
-	std::any res = it->second->call(args);
-
-	bool ser_ok = serialize(res, ser, out["result"]);
-	if(ser_ok == false)
-	{
-		out["error"] = std::string("Cannot serialize result");
-		return false;
-	}
-
-	return true;
-}
+	interface *iface = nullptr;
+	json_interface_wrapper wrapper;
+};
 
 
 int main()
 {
-	serializers_t serializers;
-	deserializers_t deserializers;
-	type_map_t type_map_in;
-	type_map_t type_map_out;
-
-	init_types(serializers, deserializers, type_map_in, type_map_out);
-
 	testo tes;
 
+	interface_executor ex;
+	ex.set_interface(&tes);
+
+	json_interface_wrapper wrapper;
+
 	{
-		/*cereal::JSONOutputArchive arch(ss);
-		get_interface(&tes, arch, type_map_out);
-		auto s = ss.str();
-		std::cout << s << std::endl;*/
+		nlohmann::json interf;
+		wrapper.get_interface(&tes, interf);
+		std::cout << interf.dump(1, '\t') << std::endl;
 	}
 
 	try
 	{
 		nlohmann::json call_json = {{"method", "test"}, {"arguments", {"test", }}};
-		std::cout << call_json.dump() << std::endl;
+		std::cout << call_json.dump(1, '\t') << std::endl;
 		nlohmann::json result;
-		process_call(&tes, call_json, result, serializers, deserializers);
-		std::cout << result.dump() << std::endl;;
+		wrapper.process_call(&tes, call_json, result);
+		std::cout << result.dump(1, '\t') << std::endl;
+		
+		call_json = {{"method", "testc"}, {"arguments", {"test", 13, 14}}};
+		std::cout << call_json.dump(1, '\t') << std::endl;
+		wrapper.process_call(&tes, call_json, result);
+		std::cout << result.dump(1, '\t') << std::endl;		
 	}
 	catch(const std::exception &e)
 	{

@@ -13,4 +13,5 @@ HEADERS += \
 	func_caller_base.h \
 	func_caller_serializer.h \
 	interface.h \
+	json_interface_wrapper.h \
 	json_serialization.h
