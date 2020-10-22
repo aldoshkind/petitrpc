@@ -15,3 +15,5 @@ HEADERS += \
 	interface.h \
 	json_interface_wrapper.h \
 	json_serialization.h
+
+LIBS += -pthread

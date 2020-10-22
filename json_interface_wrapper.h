@@ -8,6 +8,23 @@
 namespace rpc::json_serialization
 {
 
+class json_interface_wrapper_exception : public std::exception
+{
+public:
+	json_interface_wrapper_exception(const std::string &message) : msg(message)
+	{
+		//
+	}
+	
+	const char *what() const _GLIBCXX_TXN_SAFE_DYN _GLIBCXX_NOTHROW
+	{
+		return msg.c_str();
+	}
+	
+private:
+	std::string msg;
+};
+
 class json_interface_wrapper
 {
 public:
@@ -37,9 +54,11 @@ public:
 
 	bool process_call(interface *inf, nlohmann::json &in, nlohmann::json &out)
 	{
+#warning завернуть всю работу с json в try catch
+		
 		if(inf == nullptr)
 		{
-			out["error"] = std::string("No such object");
+			throw(json_interface_wrapper_exception("No such object"));
 			return false;
 		}
 
@@ -48,7 +67,7 @@ public:
 		auto it = inf->func_map.find(name);
 		if(it == inf->func_map.end())
 		{
-			out["error"] = std::string("No such method");
+			throw(json_interface_wrapper_exception("No such method"));
 			return false;
 		}
 
@@ -57,7 +76,7 @@ public:
 		bool deser_ok = deserialize_arguments(args, in, it->second->params, error);
 		if(deser_ok == false)
 		{
-			out["error"] = std::string("Cannot deserialize arguments: ") + error;
+			throw(json_interface_wrapper_exception(std::string("Cannot deserialize arguments: ") + error));
 			return false;
 		}
 
@@ -66,7 +85,7 @@ public:
 		bool ser_ok = serialize(res, serializers, out["result"]);
 		if(ser_ok == false)
 		{
-			out["error"] = std::string("Cannot serialize result");
+			throw(json_interface_wrapper_exception("Cannot serialize result"));
 			return false;
 		}
 
@@ -81,6 +100,8 @@ private:
 
 	bool deserialize_arguments(arg_set_t &args, nlohmann::json &a, const param_descr_list_t &params, std::string &error)
 	{
+#warning завернуть всю работу с json в try catch		
+
 		std::string str;
 
 		if(a.contains("arguments") == false)

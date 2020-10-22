@@ -39,14 +39,14 @@ public:
 	testo()
 	{
 		name = "testo";
-		register_method("test", (std::function<void(const std::string &)>)std::bind(&testo::test, this, std::placeholders::_1), {"str"});
+		register_method("test", (std::function<int(const std::string &)>)std::bind(&testo::test, this, std::placeholders::_1), {"str"});
 		register_method("testb", (std::function<void(const std::string &, int)>)std::bind(&testo::testb, this, std::placeholders::_1, std::placeholders::_2), {"str", "a"});
 		register_method("testc", (std::function<int(const std::string &, float, float)>)std::bind(&testo::testc, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3), {"str", "a", "b"});
 	}
 
-	void test(const std::string &s)
+	int test(const std::string &s)
 	{
-		printf("%s: %s\n", __PRETTY_FUNCTION__, s.c_str());
+		return printf("%s: %s\n", __PRETTY_FUNCTION__, s.c_str());
 	}
 
 	void testb(const std::string &s, int x)
@@ -80,7 +80,10 @@ public:
 	{
 		start();
 	}
-	virtual ~command_executor() = default;
+	virtual ~command_executor()
+	{
+		stop();
+	}
 
 	bool add_command(command_ptr cmd)
 	{
@@ -108,6 +111,7 @@ private:
 	void stop()
 	{
 		running = false;
+		commands_condvar.notify_all();
 		if(cmd_execution_thread.joinable())
 		{
 			cmd_execution_thread.join();
@@ -121,10 +125,15 @@ private:
 			command_ptr cmd;
 			{
 				std::unique_lock<decltype (commands_mutex)> lock(commands_mutex);
-				commands_condvar.wait(lock, [this](){return commands.size() > 0;});
+				commands_condvar.wait(lock, [this](){return (commands.size() > 0) || (running == false);});
+				if(running == false)
+				{
+					break;
+				}
 				cmd = commands.front();
 				commands.pop();
 			}
+			
 			try
 			{
 				cmd->reply(run_command(cmd->get_cmd()));
@@ -151,6 +160,23 @@ private:
 	}
 };
 
+class executor_exception : public std::exception
+{
+public:
+	executor_exception(const std::string &message) : msg(message)
+	{
+		//
+	}
+	
+	const char *what() const _GLIBCXX_TXN_SAFE_DYN _GLIBCXX_NOTHROW
+	{
+		return msg.c_str();
+	}
+	
+private:
+	std::string msg;
+};
+
 class interface_executor : public command_executor
 {
 public:
@@ -175,32 +201,59 @@ private:
 		{
 			json = nlohmann::json::parse(cmd);
 			request = json.at("request");
+			
+			if(iface == nullptr)
+			{
+				throw executor_exception("error: interface not set");
+			}
+			nlohmann::json out;
+			wrapper.process_call(iface, request, out);
+			return out.dump();
 		}
 		catch(const char *e)
 		{
-			return "Error parsing request";
+			throw executor_exception(e);
 		}
 		catch(const exception &e)
 		{
-			return "Error parsing request";
+			throw executor_exception(e.what());
 		}
 		catch(...)
 		{
-			return "Error parsing request";
+			throw executor_exception("error while parsing request json");
 		}
-
-		if(iface == nullptr)
-		{
-			return "Interface not set";
-		}
-		nlohmann::json out;
-		wrapper.process_call(iface, json, out);
-		return out.dump();
 	}
 
 	interface *iface = nullptr;
 	json_interface_wrapper wrapper;
 };
+
+
+class cmd : public command
+{
+public:
+	cmd()
+	{
+		//
+	}
+	
+	std::string get_cmd() const override
+	{
+		return R"({"request": {"method":"test", "arguments": ["превед медвед"]}})";
+	}
+	
+	void reply(const std::string &result) override
+	{
+		printf("%s: %s\n", __PRETTY_FUNCTION__, result.c_str());
+	}
+	
+	void error(const std::string &err) override
+	{
+		printf("%s: %s\n", __PRETTY_FUNCTION__, err.c_str());
+	}
+};
+
+
 
 
 int main()
@@ -209,27 +262,29 @@ int main()
 
 	interface_executor ex;
 	ex.set_interface(&tes);
+	
+	ex.add_command(std::make_shared<cmd>());
 
 	json_interface_wrapper wrapper;
 
 	{
 		nlohmann::json interf;
 		wrapper.get_interface(&tes, interf);
-		std::cout << interf.dump(1, '\t') << std::endl;
+		//std::cout << interf.dump(1, '\t') << std::endl;
 	}
 
 	try
 	{
 		nlohmann::json call_json = {{"method", "test"}, {"arguments", {"test", }}};
-		std::cout << call_json.dump(1, '\t') << std::endl;
+		//std::cout << call_json.dump(1, '\t') << std::endl;
 		nlohmann::json result;
-		wrapper.process_call(&tes, call_json, result);
-		std::cout << result.dump(1, '\t') << std::endl;
+		//wrapper.process_call(&tes, call_json, result);
+		//std::cout << result.dump(1, '\t') << std::endl;
 		
 		call_json = {{"method", "testc"}, {"arguments", {"test", 13, 14}}};
-		std::cout << call_json.dump(1, '\t') << std::endl;
-		wrapper.process_call(&tes, call_json, result);
-		std::cout << result.dump(1, '\t') << std::endl;		
+		//std::cout << call_json.dump(1, '\t') << std::endl;
+		//wrapper.process_call(&tes, call_json, result);
+		//std::cout << result.dump(1, '\t') << std::endl;		
 	}
 	catch(const std::exception &e)
 	{
@@ -243,5 +298,8 @@ int main()
 	{
 		printf("%s: exception\n", __PRETTY_FUNCTION__);
 	}
+	
+	std::this_thread::sleep_for(std::chrono::seconds(1));
+	
 	return 0;
 }
