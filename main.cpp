@@ -161,6 +161,70 @@ private:
 
 
 
+typedef std::vector<uint8_t> buf_t;
+
+class channel_writer
+{
+public:
+	channel_writer(){}
+	virtual ~channel_writer(){}
+	
+	virtual void send(const buf_t &buf) = 0;
+};
+
+class channel_client : public channel_writer
+{
+public:
+	virtual ~channel_client() = default;
+	
+	virtual void send(const buf_t &request, buf_t &reply) = 0;
+	virtual void send(const buf_t &buf) override = 0;
+};
+
+class channel_server// : public channel_writer
+{
+public:
+	typedef std::shared_ptr<channel_server> this_ref_t;
+	
+	class message
+	{
+	public:
+		message(channel_server::this_ref_t ref)
+		{
+			master = std::weak_ptr(ref);
+		}
+		
+		void reply(const buf_t &reply)
+		{
+			auto sp = master.lock();
+			if(sp)
+			{
+				sp->reply(this, reply);
+			}
+			printf("%s: %d %s\n", __PRETTY_FUNCTION__, (int)reply.size(), sp ? "ok" : "false");
+		}
+		
+		std::weak_ptr<channel_server> master;
+	};	
+	
+	channel_server()
+	{
+		this_ref = this_ref_t(this, [](channel_server *){});
+	}
+	
+	typedef std::shared_ptr<message> message_ptr;
+	
+	virtual ~channel_server() = default;
+	
+	//virtual void reply(message_ptr m, const buf_t &reply) = 0;
+	virtual void reply(message *m, const buf_t &reply)
+	{
+		printf("%s\n", __PRETTY_FUNCTION__);
+	}
+	
+//private:
+	this_ref_t this_ref;
+};
 
 
 
@@ -213,6 +277,16 @@ int main()
 	ic.fwd = &jf;
 
 	ic.call<int, std::string, int>("lol", "kek", 17);
+	
+	
+	
+	channel_server *cs = new channel_server;
+	auto m = std::make_shared<channel_server::message>(cs->this_ref);
+	//delete cs;
+	m->reply(buf_t());
+	
+	
+	
 
 	ex.add_command(std::make_shared<cmd>(R"({"action": "call", "body": {"method":"test", "arguments": ["15"]}})"));
 	ex.add_command(std::make_shared<cmd>(R"({"action": "get_interface"})"));
