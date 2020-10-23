@@ -80,7 +80,6 @@ private:
 		if(std::tuple_size<tup>::value != a.size())
 		{
 			throw "Wrong count of parameters";
-
 			return std::any();
 		}
 
@@ -101,7 +100,6 @@ private:
 		if(std::tuple_size<tup>::value != a.size())
 		{
 			throw "Wrong count of parameters";
-
 			return R();
 		}
 

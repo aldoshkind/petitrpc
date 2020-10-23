@@ -11,10 +11,12 @@
 
 #include <cxxabi.h>
 
-#include "interface.h"
+#include "interface_server.h"
 #include "json_serialization.h"
 #include "func_caller_serializer.h"
 #include "json_interface_wrapper.h"
+#include "command_executor.h"
+#include "interface_client.h"
 
 using namespace std;
 using namespace rpc;
@@ -33,7 +35,7 @@ std::string test(int x, int y, double z)
 	return "255";
 }
 
-class testo : public interface
+class testo : public interface_server
 {
 public:
 	testo()
@@ -60,124 +62,11 @@ public:
 	}
 };
 
-class command
-{
-public:
-	command() = default;
-	virtual ~command() = default;
 
-	virtual std::string get_cmd() const = 0;
-	virtual void reply(const std::string &cmd) = 0;
-	virtual void error(const std::string &err) = 0;
-};
 
-class command_executor
-{
-public:
-	typedef std::shared_ptr<command> command_ptr;
 
-	command_executor()
-	{
-		start();
-	}
-	virtual ~command_executor()
-	{
-		stop();
-	}
 
-	bool add_command(command_ptr cmd)
-	{
-		std::unique_lock<decltype (commands_mutex)> lock(commands_mutex);
-		commands.push(cmd);
-		commands_condvar.notify_all();
-		return true;
-	}
-
-private:
-	typedef std::queue<command_ptr> commands_t;
-	commands_t commands;
-	std::mutex commands_mutex;
-	std::condition_variable commands_condvar;
-	std::thread cmd_execution_thread;
-	bool running = false;
-
-	void start()
-	{
-		stop();
-		running = true;
-		cmd_execution_thread = std::thread(&command_executor::cmd_execution_loop, this);
-	}
-
-	void stop()
-	{
-		running = false;
-		commands_condvar.notify_all();
-		if(cmd_execution_thread.joinable())
-		{
-			cmd_execution_thread.join();
-		}
-	}
-
-	void cmd_execution_loop()
-	{
-		for( ; running ; )
-		{
-			command_ptr cmd;
-			{
-				std::unique_lock<decltype (commands_mutex)> lock(commands_mutex);
-				commands_condvar.wait(lock, [this](){return (commands.size() > 0) || (running == false);});
-				if(running == false)
-				{
-					break;
-				}
-				cmd = commands.front();
-				commands.pop();
-			}
-			
-			try
-			{
-				cmd->reply(run_command(cmd->get_cmd()));
-			}
-			catch(const char *e)
-			{
-				cmd->error(std::string("Error running command: ") + e);
-			}
-			catch(const exception &e)
-			{
-				cmd->error(std::string("Error running command: ") + e.what());
-			}
-			catch(...)
-			{
-				cmd->error("Error running command");
-			}
-		}
-	}
-
-	virtual std::string run_command(const std::string &cmd)
-	{
-		printf("%s: command: %s\n", __PRETTY_FUNCTION__, cmd.c_str());
-		return "ok";
-	}
-};
-
-class executor_exception : public std::exception
-{
-public:
-	executor_exception(const std::string &message) : msg(message)
-	{
-		//
-	}
-	
-	const char *what() const _GLIBCXX_TXN_SAFE_DYN _GLIBCXX_NOTHROW
-	{
-		return msg.c_str();
-	}
-	
-private:
-	std::string msg;
-};
-
-class interface_executor : public command_executor
+class interface_executor : public single_thread_command_executor
 {
 public:
 	interface_executor()
@@ -187,44 +76,58 @@ public:
 
 	~interface_executor() = default;
 
-	void set_interface(interface *i)
+	void set_interface(interface_server *i)
 	{
 		iface = i;
 	}
 
 private:
+	void throw_if_interface_not_set()
+	{
+		if(iface == nullptr)
+		{
+			throw rpc::exception("interface not set");
+		}
+	}
+
 	std::string run_command(const std::string &cmd)
 	{
-		nlohmann::json json;
-		nlohmann::json request;
 		try
 		{
-			json = nlohmann::json::parse(cmd);
-			request = json.at("request");
-			
-			if(iface == nullptr)
-			{
-				throw executor_exception("error: interface not set");
-			}
+			nlohmann::json json = nlohmann::json::parse(cmd);
+			std::string action = json.at("action");
 			nlohmann::json out;
-			wrapper.process_call(iface, request, out);
+
+			if(action == "call")
+			{
+				throw_if_interface_not_set();
+				const nlohmann::json &body = json.at("body");
+				wrapper.process_call(iface, body, out);
+			}
+
+			if(action == "get_interface")
+			{
+				throw_if_interface_not_set();
+				wrapper.get_interface(iface, out);
+			}
+			
 			return out.dump();
 		}
 		catch(const char *e)
 		{
-			throw executor_exception(e);
+			throw rpc::exception(e);
 		}
-		catch(const exception &e)
+		catch(const std::exception &e)
 		{
-			throw executor_exception(e.what());
+			throw rpc::exception(e.what());
 		}
 		catch(...)
 		{
-			throw executor_exception("error while parsing request json");
+			throw rpc::exception("error while parsing request json");
 		}
 	}
 
-	interface *iface = nullptr;
+	interface_server *iface = nullptr;
 	json_interface_wrapper wrapper;
 };
 
@@ -232,26 +135,68 @@ private:
 class cmd : public command
 {
 public:
-	cmd()
+	cmd(const std::string &command) : c(command)
 	{
 		//
 	}
 	
 	std::string get_cmd() const override
 	{
-		return R"({"request": {"method":"test", "arguments": ["превед медвед"]}})";
+		return c;
 	}
 	
 	void reply(const std::string &result) override
 	{
-		printf("%s: %s\n", __PRETTY_FUNCTION__, result.c_str());
+		printf("%s: %s\n", __PRETTY_FUNCTION__, nlohmann::json::parse(result).dump(1, '\t').c_str());
 	}
 	
 	void error(const std::string &err) override
 	{
 		printf("%s: %s\n", __PRETTY_FUNCTION__, err.c_str());
 	}
+
+private:
+	std::string c;
 };
+
+
+
+
+
+
+class json_forwarder : public call_forwarder
+{
+public:
+	json_forwarder()
+	{
+		init_types(serializers, deserializers, type_map_in, type_map_out);
+	}
+	
+	std::any forward_call(const std::string method, const std::vector<std::any> &args) override
+	{
+		nlohmann::json call;
+		call["method"] = method;
+		auto &arg_node = call["arguments"] = nlohmann::json::array({});
+		
+		for(const auto &arg : args)
+		{
+			nlohmann::json arg_json;
+			serialize(arg, serializers, arg_json);
+			arg_node.push_back(arg_json);
+		}
+		
+		printf("%s\n", call.dump(1, '\t').c_str());
+		
+		return std::any();
+	}
+	
+private:	
+	serializers_t serializers;
+	deserializers_t deserializers;
+	type_map_t type_map_in;
+	type_map_t type_map_out;
+};
+
 
 
 
@@ -262,8 +207,17 @@ int main()
 
 	interface_executor ex;
 	ex.set_interface(&tes);
-	
-	ex.add_command(std::make_shared<cmd>());
+
+	interface_client ic;
+	json_forwarder jf;
+	ic.fwd = &jf;
+
+	ic.call<int, std::string, int>("lol", "kek", 17);
+
+	ex.add_command(std::make_shared<cmd>(R"({"action": "call", "body": {"method":"test", "arguments": ["15"]}})"));
+	ex.add_command(std::make_shared<cmd>(R"({"action": "get_interface"})"));
+	ex.add_command(std::make_shared<cmd>(R"({"action": "call", "body": {"method":"testb", "arguments": ["15"]}})"));
+	ex.add_command(std::make_shared<cmd>(R"({"action": "call", "body": {"method":"testc", "arguments": ["15", 16, 18]}})"));
 
 	json_interface_wrapper wrapper;
 

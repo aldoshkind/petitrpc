@@ -13,7 +13,7 @@ namespace rpc::json_serialization
 typedef std::map<std::string, std::string> type_map_t;
 
 typedef std::function<void(const std::any &, nlohmann::json &)> serializer_t;
-typedef std::function<void(nlohmann::json &, std::any &)> deserializer_t;
+typedef std::function<void(const nlohmann::json &, std::any &)> deserializer_t;
 
 typedef std::map<std::string, serializer_t> serializers_t;
 typedef std::map<std::string, deserializer_t> deserializers_t;
@@ -26,7 +26,7 @@ void serialize(const std::any &a, nlohmann::json &b)
 }
 
 template <class T>
-void deserialize(nlohmann::json &b, std::any &a)
+void deserialize(const nlohmann::json &b, std::any &a)
 {
 	T v = b;
 	a = v;
@@ -79,7 +79,7 @@ bool serialize(const std::any &a, const serializers_t &sers, nlohmann::json &arc
 	return true;
 }
 
-bool deserialize(nlohmann::json &arch, const deserializers_t &desers, std::any &a, std::string type)
+bool deserialize(const nlohmann::json &arch, const deserializers_t &desers, std::any &a, std::string type)
 {
 	auto deser = desers.find(type);
 	if(deser == desers.end())
@@ -117,7 +117,7 @@ void init_types(serializers_t &serializers, deserializers_t &deserializers, type
 	add_type<void>("void", type_map_in, type_map_out);
 	
 	serializers[typeid(void).name()] = [](const std::any &, nlohmann::json &j){j.clear();};
-	deserializers[typeid(void).name()] = [](nlohmann::json &, std::any &a){a.reset();};
+	deserializers[typeid(void).name()] = [](const nlohmann::json &, std::any &a){a.reset();};
 }
 
 }
