@@ -12,7 +12,7 @@ class call_forwarder
 {
 public:
 	virtual ~call_forwarder() = default;
-	virtual std::any forward_call(const std::string method, const std::vector<std::any> &args) = 0;
+	virtual std::any call(const std::string method, const std::vector<std::any> &args) = 0;
 };
 
 template <int i = 0, class ... Ts>
@@ -69,7 +69,7 @@ public:
 		{
 			try
 			{
-				auto res = fwd->forward_call(method, arg_vec);
+				auto res = fwd->call(method, arg_vec);
 				return std::any_cast<R>(res);
 			}
 			catch(...)

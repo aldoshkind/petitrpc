@@ -78,13 +78,13 @@ public:
 
 	void set_interface(interface_server *i)
 	{
-		iface = i;
+		server = i;
 	}
 
 private:
 	void throw_if_interface_not_set()
 	{
-		if(iface == nullptr)
+		if(server == nullptr)
 		{
 			throw rpc::exception("interface not set");
 		}
@@ -102,13 +102,13 @@ private:
 			{
 				throw_if_interface_not_set();
 				const nlohmann::json &body = json.at("body");
-				wrapper.process_call(iface, body, out);
+				wrapper.process_call(server, body, out);
 			}
 
 			if(action == "get_interface")
 			{
 				throw_if_interface_not_set();
-				wrapper.get_interface(iface, out);
+				wrapper.get_interface(server, out);
 			}
 			
 			return out.dump();
@@ -127,7 +127,7 @@ private:
 		}
 	}
 
-	interface_server *iface = nullptr;
+	interface_server *server = nullptr;
 	json_interface_wrapper wrapper;
 };
 
@@ -162,6 +162,7 @@ private:
 
 
 typedef std::vector<uint8_t> buf_t;
+typedef std::shared_ptr<buf_t> buf_ptr;
 
 class channel_writer
 {
@@ -194,15 +195,19 @@ public:
 			master = std::weak_ptr(ref);
 		}
 		
-		void reply(const buf_t &reply)
+		virtual ~message(){}
+		
+		void reply(const buf_ptr &reply)
 		{
 			auto sp = master.lock();
 			if(sp)
 			{
 				sp->reply(this, reply);
 			}
-			printf("%s: %d %s\n", __PRETTY_FUNCTION__, (int)reply.size(), sp ? "ok" : "false");
+			printf("%s: %d %s\n", __PRETTY_FUNCTION__, (int)reply->size(), sp ? "ok" : "false");
 		}
+		
+		virtual buf_ptr get_buf() = 0;
 		
 		std::weak_ptr<channel_server> master;
 	};	
@@ -212,15 +217,14 @@ public:
 		this_ref = this_ref_t(this, [](channel_server *){});
 	}
 	
-	typedef std::shared_ptr<message> message_ptr;
-	
 	virtual ~channel_server() = default;
 	
+	typedef std::shared_ptr<message> message_ptr;
+	
+	virtual message_ptr read_next() = 0;
+	
 	//virtual void reply(message_ptr m, const buf_t &reply) = 0;
-	virtual void reply(message *m, const buf_t &reply)
-	{
-		printf("%s\n", __PRETTY_FUNCTION__);
-	}
+	virtual void reply(message *m, const buf_ptr &reply) = 0;
 	
 //private:
 	this_ref_t this_ref;
@@ -236,7 +240,7 @@ public:
 		init_types(serializers, deserializers, type_map_in, type_map_out);
 	}
 	
-	std::any forward_call(const std::string method, const std::vector<std::any> &args) override
+	std::any call(const std::string method, const std::vector<std::any> &args) override
 	{
 		nlohmann::json call;
 		call["method"] = method;
@@ -249,9 +253,27 @@ public:
 			arg_node.push_back(arg_json);
 		}
 		
-		printf("%s\n", call.dump(1, '\t').c_str());
+		auto req_str = call.dump();
+		buf_t req_buf(req_str.begin(), req_str.end());
+		
+		if(client)
+		{
+			buf_t rep;
+			client->send(req_buf, rep);
+			return rep;
+		}
 		
 		return std::any();
+	}
+
+	void set_client(channel_client *cl)
+	{
+		set_client(std::shared_ptr<channel_client>(cl, [](channel_client *){}));
+	}
+	
+	void set_client(std::shared_ptr<channel_client> cl)
+	{
+		client = cl;
 	}
 	
 private:	
@@ -259,73 +281,214 @@ private:
 	deserializers_t deserializers;
 	type_map_t type_map_in;
 	type_map_t type_map_out;
+	
+	std::shared_ptr<channel_client> client;
 };
 
 
+
+class channel_inprocess : public channel_client, public channel_server
+{
+public:
+	channel_inprocess()
+	{
+		//
+	}
+	
+	~channel_inprocess()
+	{
+		//
+	}
+	
+	void send(const buf_t &request, buf_t &reply) override
+	{
+		std::unique_lock<std::mutex> lock(waiters_mutex);
+		auto wtr = std::make_shared<waiter>();
+		auto id = std::this_thread::get_id();
+		waiters_map[id] = wtr;
+		std::unique_lock<std::mutex> queue_lock(queue_mtx);
+		buf_queue.push(id);
+		queue_lock.unlock();
+		queue_condvar.notify_one();
+		lock.unlock();
+		buf_ptr buf = wtr->wait(std::make_shared<buf_t>(request));
+		reply = *(buf.get());
+	}
+	
+	void send(const buf_t &buf) override
+	{
+		//
+	}
+	
+	message_ptr read_next() override
+	{
+		std::unique_lock<std::mutex> queue_lock(queue_mtx);
+		queue_condvar.wait(queue_lock, [this](){return buf_queue.size() > 0;});
+		auto b = buf_queue.front();
+		buf_queue.pop();
+		queue_lock.unlock();
+		std::unique_lock<std::mutex> waiters_lock(waiters_mutex);
+		auto m = std::make_shared<inproc_message>(this_ref, b);
+		m->buf = waiters_map.at(b)->req_buf;
+		return m;
+	}
+	
+private:
+	typedef std::queue<std::thread::id> buf_queue_t;
+	buf_queue_t buf_queue;
+	std::mutex queue_mtx;
+	std::condition_variable queue_condvar;
+	
+	
+	class inproc_message : public message
+	{
+	public:
+		inproc_message(channel_server::this_ref_t ref, std::thread::id i) : message(ref), id(i)
+		{
+			//
+		}
+		
+		buf_ptr get_buf() override
+		{
+			return buf;
+		}
+		
+		std::thread::id id;
+		buf_ptr buf;
+	};
+	
+	
+	class waiter
+	{
+	public:		
+		buf_ptr wait(buf_ptr req)
+		{
+			std::unique_lock<std::mutex> lock(mtx);
+			req_buf = req;
+			cv.wait(lock, [this](){return rep_buf.get() != nullptr;});
+			return rep_buf;
+		}
+		
+		void reply(const buf_ptr b)
+		{
+			std::unique_lock<std::mutex> lock(mtx);
+			rep_buf = b;
+			cv.notify_one();
+		}
+	private:
+		std::mutex mtx;
+		std::condition_variable cv;
+	public:
+		std::shared_ptr<buf_t> req_buf;
+		std::shared_ptr<buf_t> rep_buf;
+	};
+	
+	typedef std::shared_ptr<waiter> waiter_ptr;
+	typedef std::map<std::thread::id, waiter_ptr> waiter_map_t;
+	waiter_map_t waiters_map;
+	std::mutex waiters_mutex;
+	
+	void reply(message *m, const buf_ptr &reply) override
+	{
+		inproc_message *im = dynamic_cast<inproc_message *>(m);
+		if(im == nullptr)
+		{
+			return;
+		}
+		auto id = im->id;
+		
+		std::unique_lock<std::mutex> lock(queue_mtx);
+		auto it = waiters_map.find(id);
+		if(it != waiters_map.end())
+		{
+			return;
+		}
+		auto w = it->second;
+		w->reply(reply);
+		waiters_map.erase(it);
+	}
+};
+
+
+
+class channel_poller
+{
+public:
+	channel_poller()
+	{
+		is_running = true;
+		thread = std::thread(&channel_poller::loop, this);
+	}
+	
+	virtual ~channel_poller()
+	{
+		is_running = false;
+		if(thread.joinable())
+		{
+			thread.join();
+		}
+	}
+	
+	void set_executor(interface_executor *e)
+	{
+		iex = e;
+	}
+	
+	void set_channel(channel_server *s)
+	{
+		server = s;
+	}
+	
+private:
+	interface_executor *iex = nullptr;
+	channel_server *server = nullptr;
+	
+	std::thread thread;
+	bool is_running = false;
+	
+	void loop()
+	{
+		for( ; is_running == true ; )
+		{
+			if(server == nullptr || iex == nullptr)
+			{
+				std::this_thread::sleep_for(std::chrono::seconds(1));
+				continue;
+			}
+			
+			auto m = server->read_next();
+			
+			auto buf = m->get_buf();
+			auto s = std::string((char *)buf->data(), buf->size());
+			iex->add_command(std::make_shared<cmd>(s));
+		}
+	}
+};
 
 
 
 int main()
 {
+	channel_inprocess cip;
+	
+	
 	testo tes;
 
 	interface_executor ex;
 	ex.set_interface(&tes);
+	
+	channel_poller cp;
+	cp.set_executor(&ex);
+	cp.set_channel(&cip);
 
+	
+	
 	interface_client ic;
 	json_forwarder jf;
-	ic.fwd = &jf;
-
+	ic.fwd = &jf;	
+	jf.set_client(&cip);
+	
 	ic.call<int, std::string, int>("lol", "kek", 17);
-	
-	
-	
-	channel_server *cs = new channel_server;
-	auto m = std::make_shared<channel_server::message>(cs->this_ref);
-	//delete cs;
-	m->reply(buf_t());
-	
-	
-	
-
-	ex.add_command(std::make_shared<cmd>(R"({"action": "call", "body": {"method":"test", "arguments": ["15"]}})"));
-	ex.add_command(std::make_shared<cmd>(R"({"action": "get_interface"})"));
-	ex.add_command(std::make_shared<cmd>(R"({"action": "call", "body": {"method":"testb", "arguments": ["15"]}})"));
-	ex.add_command(std::make_shared<cmd>(R"({"action": "call", "body": {"method":"testc", "arguments": ["15", 16, 18]}})"));
-
-	json_interface_wrapper wrapper;
-
-	{
-		nlohmann::json interf;
-		wrapper.get_interface(&tes, interf);
-		//std::cout << interf.dump(1, '\t') << std::endl;
-	}
-
-	try
-	{
-		nlohmann::json call_json = {{"method", "test"}, {"arguments", {"test", }}};
-		//std::cout << call_json.dump(1, '\t') << std::endl;
-		nlohmann::json result;
-		//wrapper.process_call(&tes, call_json, result);
-		//std::cout << result.dump(1, '\t') << std::endl;
-		
-		call_json = {{"method", "testc"}, {"arguments", {"test", 13, 14}}};
-		//std::cout << call_json.dump(1, '\t') << std::endl;
-		//wrapper.process_call(&tes, call_json, result);
-		//std::cout << result.dump(1, '\t') << std::endl;		
-	}
-	catch(const std::exception &e)
-	{
-		printf("%s: %s\n", __PRETTY_FUNCTION__, e.what());
-	}
-	catch(const char *e)
-	{
-		printf("%s: %s\n", __PRETTY_FUNCTION__, e);
-	}
-	catch (...)
-	{
-		printf("%s: exception\n", __PRETTY_FUNCTION__);
-	}
 	
 	std::this_thread::sleep_for(std::chrono::seconds(1));
 	
