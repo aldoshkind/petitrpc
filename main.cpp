@@ -66,7 +66,7 @@ public:
 
 
 
-class interface_executor : public single_thread_command_executor
+class interface_executor : public single_thread_command_executor, public json_interface_wrapper
 {
 public:
 	interface_executor()
@@ -95,21 +95,10 @@ private:
 		try
 		{
 			nlohmann::json json = nlohmann::json::parse(cmd);
-			std::string action = json.at("action");
 			nlohmann::json out;
 
-			if(action == "call")
-			{
-				throw_if_interface_not_set();
-				const nlohmann::json &body = json.at("body");
-				wrapper.process_call(server, body, out);
-			}
-
-			if(action == "get_interface")
-			{
-				throw_if_interface_not_set();
-				wrapper.get_interface(server, out);
-			}
+			throw_if_interface_not_set();
+			process_call(server, json, out);
 			
 			return out.dump();
 		}
@@ -128,37 +117,7 @@ private:
 	}
 
 	interface_server *server = nullptr;
-	json_interface_wrapper wrapper;
 };
-
-
-class cmd : public command
-{
-public:
-	cmd(const std::string &command) : c(command)
-	{
-		//
-	}
-	
-	std::string get_cmd() const override
-	{
-		return c;
-	}
-	
-	void reply(const std::string &result) override
-	{
-		printf("%s: %s\n", __PRETTY_FUNCTION__, nlohmann::json::parse(result).dump(1, '\t').c_str());
-	}
-	
-	void error(const std::string &err) override
-	{
-		printf("%s: %s\n", __PRETTY_FUNCTION__, err.c_str());
-	}
-
-private:
-	std::string c;
-};
-
 
 
 typedef std::vector<uint8_t> buf_t;
@@ -218,6 +177,8 @@ public:
 	}
 	
 	virtual ~channel_server() = default;
+	
+	virtual void stop(){}
 	
 	typedef std::shared_ptr<message> message_ptr;
 	
@@ -297,7 +258,8 @@ public:
 	
 	~channel_inprocess()
 	{
-		//
+		running = false;
+		queue_condvar.notify_all();
 	}
 	
 	void send(const buf_t &request, buf_t &reply) override
@@ -320,10 +282,20 @@ public:
 		//
 	}
 	
+	void stop()
+	{
+		running = false;
+		queue_condvar.notify_all();
+	}
+	
 	message_ptr read_next() override
 	{
 		std::unique_lock<std::mutex> queue_lock(queue_mtx);
-		queue_condvar.wait(queue_lock, [this](){return buf_queue.size() > 0;});
+		queue_condvar.wait(queue_lock, [this](){return (buf_queue.size() > 0) || (running == false);});
+		if(running == false)
+		{
+			return message_ptr();
+		}
 		auto b = buf_queue.front();
 		buf_queue.pop();
 		queue_lock.unlock();
@@ -338,6 +310,7 @@ private:
 	buf_queue_t buf_queue;
 	std::mutex queue_mtx;
 	std::condition_variable queue_condvar;
+	bool running = true;
 	
 	
 	class inproc_message : public message
@@ -399,7 +372,7 @@ private:
 		
 		std::unique_lock<std::mutex> lock(queue_mtx);
 		auto it = waiters_map.find(id);
-		if(it != waiters_map.end())
+		if(it == waiters_map.end())
 		{
 			return;
 		}
@@ -409,6 +382,43 @@ private:
 	}
 };
 
+
+class cmd : public command
+{
+public:
+	cmd(channel_server::message_ptr m) : msg(m)
+	{
+		//
+	}
+	
+	std::string get_cmd() const override
+	{
+		return msg.get() ? std::string((char *)msg->get_buf()->data(), msg->get_buf()->size()) : "";
+	}
+	
+	void reply(const std::string &result) override
+	{
+		printf("%s: %s\n", __PRETTY_FUNCTION__, nlohmann::json::parse(result).dump(1, '\t').c_str());
+		if(msg)
+		{
+			buf_t buf((uint8_t *)result.data(), (uint8_t *)result.data() + result.size());
+			msg->reply(std::make_shared<buf_t>(buf));
+		}
+	}
+	
+	void error(const std::string &err) override
+	{
+		printf("%s: %s\n", __PRETTY_FUNCTION__, err.c_str());
+		if(msg)
+		{
+			buf_t buf((uint8_t *)err.data(), (uint8_t *)err.data() + err.size());
+			msg->reply(std::make_shared<buf_t>(buf));
+		}
+	}
+
+private:
+	channel_server::message_ptr msg;
+};
 
 
 class channel_poller
@@ -422,6 +432,10 @@ public:
 	
 	virtual ~channel_poller()
 	{
+		if(server)
+		{
+			server->stop();
+		}
 		is_running = false;
 		if(thread.joinable())
 		{
@@ -457,10 +471,11 @@ private:
 			}
 			
 			auto m = server->read_next();
-			
-			auto buf = m->get_buf();
-			auto s = std::string((char *)buf->data(), buf->size());
-			iex->add_command(std::make_shared<cmd>(s));
+			if(!m)
+			{
+				continue;
+			}
+			iex->add_command(std::make_shared<cmd>(m));
 		}
 	}
 };
@@ -469,26 +484,23 @@ private:
 
 int main()
 {
-	channel_inprocess cip;
-	
+	channel_inprocess channel;
 	
 	testo tes;
 
-	interface_executor ex;
-	ex.set_interface(&tes);
+	interface_executor executor;
+	executor.set_interface(&tes);
 	
-	channel_poller cp;
-	cp.set_executor(&ex);
-	cp.set_channel(&cip);
+	channel_poller poller;
+	poller.set_executor(&executor);
+	poller.set_channel(&channel);
 
+	interface_client client;
+	json_forwarder forwarder;
+	client.fwd = &forwarder;	
+	forwarder.set_client(&channel);
 	
-	
-	interface_client ic;
-	json_forwarder jf;
-	ic.fwd = &jf;	
-	jf.set_client(&cip);
-	
-	ic.call<int, std::string, int>("lol", "kek", 17);
+	client.call<int, std::string, int>("test", "kek", 17);
 	
 	std::this_thread::sleep_for(std::chrono::seconds(1));
 	
