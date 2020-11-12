@@ -22,7 +22,7 @@ public:
 	virtual ~interface_server() = default;
 
 	template <typename R, class ...Ts>
-	void register_method(std::string name, const std::function<R(Ts...)> &f, std::array<std::string, sizeof...(Ts)> parameter_names)
+	void register_method(std::string name, const std::function<R(Ts...)> &f, std::array<std::string, sizeof...(Ts)> parameter_names = {})
 	{
 		func_ptr fc = std::make_shared<func_caller<R, Ts...>>(f);
 		fc->name = name;

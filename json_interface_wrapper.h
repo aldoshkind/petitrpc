@@ -80,12 +80,12 @@ public:
 		return true;
 	}
 
-private:
 	serializers_t serializers;
 	deserializers_t deserializers;
 	type_map_t type_map_in;
 	type_map_t type_map_out;
 
+private:
 	bool deserialize_arguments(arg_set_t &args, const nlohmann::json &a, const param_descr_list_t &params)
 	{
 		try
