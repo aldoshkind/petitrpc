@@ -8,7 +8,7 @@
 namespace rpc::json_serialization
 {
 
-void serialize(const func_caller_base *fc, nlohmann::json &a, const type_map_t &types)
+void serialize_caller(const func_caller_base *fc, nlohmann::json &a, const type_map_t &types)
 {
 	a["name"] = fc->name;
 	a["return"] = get_type(fc->return_type, types);
@@ -20,3 +20,4 @@ void serialize(const func_caller_base *fc, nlohmann::json &a, const type_map_t &
 }
 
 }
+

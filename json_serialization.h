@@ -12,14 +12,23 @@ namespace rpc::json_serialization
 
 typedef std::map<std::string, std::string> type_map_t;
 
-typedef std::function<void(const std::any &, nlohmann::json &)> serializer_t;
+class serializer
+{
+public:
+	virtual ~serializer() {}
+	virtual bool serialize(const std::any &, nlohmann::json &) const = 0;
+};
+
+typedef std::function<void(const std::any &, nlohmann::json &, const serializer *)> serializer_t;
 typedef std::function<void(const nlohmann::json &, std::any &)> deserializer_t;
 
 typedef std::map<std::string, serializer_t> serializers_t;
 typedef std::map<std::string, deserializer_t> deserializers_t;
 
+
+
 template <class T>
-void serialize(const std::any &a, nlohmann::json &b)
+void serialize(const std::any &a, nlohmann::json &b, const serializer *)
 {
 	const auto &v = std::any_cast<T>(a);
 	b = v;
@@ -68,17 +77,6 @@ std::string get_type(const std::string &id, const type_map_t &types)
 	return types.at(id);
 }
 
-bool serialize(const std::any &a, const serializers_t &sers, nlohmann::json &arch)
-{
-	auto ser = sers.find(a.type().name());
-	if(ser == sers.end())
-	{
-		return false;
-	}
-	ser->second(a, arch);
-	return true;
-}
-
 bool deserialize(const nlohmann::json &arch, const deserializers_t &desers, std::any &a, std::string type)
 {
 	auto deser = desers.find(type);
@@ -116,7 +114,7 @@ void init_types(serializers_t &serializers, deserializers_t &deserializers, type
 	add_type<std::string>("string", type_map_in, type_map_out);
 	add_type<void>("void", type_map_in, type_map_out);
 	
-	serializers[typeid(void).name()] = [](const std::any &, nlohmann::json &j){j.clear();};
+	serializers[typeid(void).name()] = [](const std::any &, nlohmann::json &j, const serializer *){j.clear();};
 	deserializers[typeid(void).name()] = [](const nlohmann::json &, std::any &a){a.reset();};
 }
 

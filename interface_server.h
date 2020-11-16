@@ -33,6 +33,8 @@ public:
 		}
 	}
 
+	virtual std::any get_state() const = 0;
+
 	typedef std::shared_ptr<func_caller_base> func_ptr;
 	typedef std::map<std::string, func_ptr> func_map_t;
 	func_map_t func_map;
@@ -41,3 +43,4 @@ public:
 };
 
 }
+

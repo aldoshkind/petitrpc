@@ -10,7 +10,7 @@
 namespace rpc::json_serialization
 {
 
-class json_interface_wrapper
+class json_interface_wrapper : public serializer
 {
 public:
 	json_interface_wrapper()
@@ -32,9 +32,21 @@ public:
 		{
 			const func_caller_base *fc = func.second.get();
 			auto o = methods.object();
-			serialize(fc, o, type_map_out);
+			serialize_caller(fc, o, type_map_out);
 			methods.push_back(o);
 		}
+	}
+
+	bool get_state(interface_server *inf, nlohmann::json &out)
+	{
+		std::any res = inf->get_state();
+		bool ser_ok = serialize(res, out);
+		if(ser_ok == false)
+		{
+			throw(rpc::exception("Cannot serialize result"));
+			return false;
+		}
+		return true;
 	}
 
 	bool process_call(interface_server *inf, const nlohmann::json &in, nlohmann::json &out)
@@ -70,7 +82,7 @@ public:
 
 		std::any res = it->second->call(args);
 
-		bool ser_ok = serialize(res, serializers, out["result"]);
+		bool ser_ok = serialize(res, out["result"]);
 		if(ser_ok == false)
 		{
 			throw(rpc::exception("Cannot serialize result"));
@@ -86,6 +98,17 @@ public:
 	type_map_t type_map_out;
 
 private:
+	bool serialize(const std::any &a, nlohmann::json &out) const override
+	{
+		auto ser = serializers.find(a.type().name());
+		if(ser == serializers.end())
+		{
+			return false;
+		}
+		ser->second(a, out, this);
+		return true;
+	}
+
 	bool deserialize_arguments(arg_set_t &args, const nlohmann::json &a, const param_descr_list_t &params)
 	{
 		try
