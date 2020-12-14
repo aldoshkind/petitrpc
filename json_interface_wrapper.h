@@ -92,12 +92,12 @@ public:
 		return true;
 	}
 
+	// TODO: move to separate class
 	serializers_t serializers;
 	deserializers_t deserializers;
 	type_map_t type_map_in;
 	type_map_t type_map_out;
 
-private:
 	bool serialize(const std::any &a, nlohmann::json &out) const override
 	{
 		auto ser = serializers.find(a.type().name());
@@ -109,6 +109,7 @@ private:
 		return true;
 	}
 
+private:
 	bool deserialize_arguments(arg_set_t &args, const nlohmann::json &a, const param_descr_list_t &params)
 	{
 		try
