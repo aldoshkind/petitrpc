@@ -67,9 +67,18 @@ public:
 		}
 
 		arg_set_t args;
+		auto &caller = it->second;
+
 		try
 		{
-			deserialize_arguments(args, in, it->second->params);
+			if(caller->strong_typed == true)
+			{
+				deserialize_arguments(args, in, caller->params);
+			}
+			else
+			{
+				deserialize_arguments(args, in);
+			}
 		}
 		catch(const std::exception &e)
 		{
@@ -80,7 +89,23 @@ public:
 			throw(rpc::exception(std::string("Cannot deserialize arguments")));
 		}
 
-		std::any res = it->second->call(args);
+		std::any res;
+		try
+		{
+			res = caller->call(args);
+		}
+		catch(const std::exception &e)
+		{
+			throw(rpc::exception(std::string("Method call failed: ") + e.what()));
+		}
+		catch(const std::string &e)
+		{
+			throw(rpc::exception(std::string("Method call failed: ") + e));
+		}
+		catch(...)
+		{
+			throw(rpc::exception("Method call failed"));
+		}
 
 		bool ser_ok = serialize(res, out["result"]);
 		if(ser_ok == false)
@@ -132,6 +157,65 @@ private:
 				{
 					throw(rpc::exception("argument " + std::to_string(i) + " deserialization error: " + e.what()));
 				}
+				args.push_back(a);
+			}
+		}
+		catch(const char *e)
+		{
+			throw(rpc::exception(e));
+		}
+		catch(const std::exception &e)
+		{
+			throw(rpc::exception(e.what()));
+		}
+		catch(...)
+		{
+			throw(rpc::exception("Arguments deserialization error"));
+		}
+
+		return true;
+	}
+
+	bool deserialize_arguments(arg_set_t &args, const nlohmann::json &a)
+	{
+		try
+		{
+			const nlohmann::json &arguments = a.at("arguments");
+
+			for(size_t i = 0 ; i < arguments.size() ; i += 1)
+			{
+				std::any a;
+				auto &arg = arguments[i];
+				auto type = arg.type();
+
+				switch(type)
+				{
+				case nlohmann::detail::value_t::boolean:
+					a = (bool)(arg);
+				break;
+				case nlohmann::detail::value_t::number_float:
+					a = (float)(arg);
+				break;
+				case nlohmann::detail::value_t::number_integer:
+					a = (int)(arg);
+				break;
+				case nlohmann::detail::value_t::number_unsigned:
+					a = (unsigned)(arg);
+				break;
+				case nlohmann::detail::value_t::object:
+					a = arg;
+				break;
+				case nlohmann::detail::value_t::string:
+					a = (std::string)(arg);
+				break;
+				case nlohmann::detail::value_t::null:
+					a = nullptr;
+				break;
+				default:
+					throw(rpc::exception("argument " + std::to_string(i) + " deserialization error: not supported"));
+				break;
+				}
+
 				args.push_back(a);
 			}
 		}

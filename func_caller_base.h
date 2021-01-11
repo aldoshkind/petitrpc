@@ -20,6 +20,8 @@ public:
 	std::string return_type;
 	param_descr_list_t params;
 
+	bool strong_typed = true;
+
 	void set_param_name(size_t i, const std::string &name)
 	{
 		if(params.size() > i)
