@@ -37,7 +37,7 @@ public:
 		}
 	}
 
-	bool get_state(interface_server *inf, nlohmann::json &out)
+	bool get_state(interface_server *inf, nlohmann::json &out) const
 	{
 		std::any res = inf->get_state();
 		bool ser_ok = serialize(res, out);
