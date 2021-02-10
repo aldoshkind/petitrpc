@@ -33,6 +33,14 @@ public:
 		}
 	}
 
+    void unregister_method(std::string name)
+    {
+        if (func_map.find(name) != func_map.end())
+        {
+            func_map.erase(name);
+        }
+    }
+
 	virtual std::any get_state() const = 0;
 
 	typedef std::shared_ptr<func_caller_base> func_ptr;
