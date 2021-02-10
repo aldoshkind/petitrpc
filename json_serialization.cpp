@@ -28,6 +28,7 @@ void init_types(serializers_t &serializers, deserializers_t &deserializers, type
 	add_type<int>(serializers, deserializers);
 	add_type<float>(serializers, deserializers);
 	add_type<double>(serializers, deserializers);
+    add_type<bool>(serializers, deserializers);
 	add_type<uint32_t>(serializers, deserializers);
 	add_type<uint16_t>(serializers, deserializers);
 	add_type<int32_t>(serializers, deserializers);
@@ -48,6 +49,7 @@ void init_types(serializers_t &serializers, deserializers_t &deserializers, type
 	add_type<double>("double", type_map_in, type_map_out);
 	add_type<std::string>("string", type_map_in, type_map_out);
 	add_type<void>("void", type_map_in, type_map_out);
+    add_type<bool>("bool", type_map_in, type_map_out);
 
 	serializers[typeid(void).name()] = [](const std::any &, nlohmann::json &j, const serializer *){j.clear();};
 	deserializers[typeid(void).name()] = [](const nlohmann::json &, std::any &a){a.reset();};
